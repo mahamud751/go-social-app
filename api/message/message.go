@@ -6,8 +6,10 @@ import (
 	"social-media-app/api/auth"
 	"social-media-app/api/models"
 	"social-media-app/config"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -38,23 +40,43 @@ func NewMessageHandler(db *gorm.DB, redisClient *redis.Client) *MessageHandler {
 }
 
 func (h *MessageHandler) AddMessage(c *fiber.Ctx) error {
-	var req MessageRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request"})
-	}
+    var req MessageRequest
+    if err := c.BodyParser(&req); err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request"})
+    }
 
-	message := models.Message{
-		ChatID:   req.ChatID,
-		SenderID: req.SenderID,
-		Text:     req.Text,
-	}
-	if err := h.db.Create(&message).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
-	}
+    // Validate UUIDs
+    if _, err := uuid.Parse(req.ChatID); err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid chatId format"})
+    }
+    if _, err := uuid.Parse(req.SenderID); err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid senderId format"})
+    }
 
-	messageJSON, _ := json.Marshal(message)
-	h.redisClient.Publish(context.Background(), "chat:"+req.ChatID, messageJSON)
-	return c.JSON(message)
+    // Verify chat exists
+    var chat models.Chat
+    if err := h.db.Where("id = ?", req.ChatID).First(&chat).Error; err != nil {
+        return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Chat not found"})
+    }
+
+    // Verify sender exists
+    var sender models.User
+    if err := h.db.Where("id = ?", req.SenderID).First(&sender).Error; err != nil {
+        return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Sender not found"})
+    }
+
+    message := models.Message{
+        ChatID:   req.ChatID,
+        SenderID: req.SenderID,
+        Text:     req.Text,
+    }
+    if err := h.db.Create(&message).Error; err != nil {
+        return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+    }
+
+    messageJSON, _ := json.Marshal(message)
+    h.redisClient.Publish(context.Background(), "chat:"+req.ChatID, messageJSON)
+    return c.JSON(message)
 }
 
 func (h *MessageHandler) GetMessages(c *fiber.Ctx) error {

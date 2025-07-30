@@ -2,6 +2,7 @@ package config
 
 import (
 	"social-media-app/api/models"
+
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -10,6 +11,7 @@ func InitDB(cfg *Config) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.New(postgres.Config{
 		DSN:                  cfg.DatabaseURL,
 		PreferSimpleProtocol: true, // disables statement caching
+		
 		
 	}), &gorm.Config{})
 	

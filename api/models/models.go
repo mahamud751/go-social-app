@@ -2,12 +2,12 @@ package models
 
 import (
 	"database/sql/driver"
-	"time"
-	"github.com/google/uuid"
-	"gorm.io/gorm"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // StringArray is a custom type to handle PostgreSQL text arrays
@@ -45,14 +45,54 @@ func (a StringArray) Value() (driver.Value, error) {
 	return "{" + strings.Join(a, ",") + "}", nil
 }
 
+// UUIDArray is a custom type to handle PostgreSQL uuid arrays
+type UUIDArray []string
+
+// Scan implements the sql.Scanner interface
+func (a *UUIDArray) Scan(value interface{}) error {
+	if value == nil {
+		*a = UUIDArray{}
+		return nil
+	}
+	str, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("failed to scan uuid array: not a string")
+	}
+	
+	// Remove curly braces
+	str = strings.TrimPrefix(str, "{")
+	str = strings.TrimSuffix(str, "}")
+	
+	if str == "" {
+		*a = UUIDArray{}
+		return nil
+	}
+	
+	*a = UUIDArray(strings.Split(str, ","))
+	return nil
+}
+
+// Value implements the driver.Valuer interface
+func (a UUIDArray) Value() (driver.Value, error) {
+	if len(a) == 0 {
+		return "{}", nil
+	}
+	for _, v := range a {
+		if _, err := uuid.Parse(v); err != nil {
+			return nil, fmt.Errorf("invalid uuid in array: %s", v)
+		}
+	}
+	return "{" + strings.Join(a, ",") + "}", nil
+}
+
 type User struct {
-	ID             string     `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	Username       string     `gorm:"uniqueIndex;not null"`
-	Password       string     `gorm:"not null"`
-	Firstname      string     `gorm:"not null"`
-	Lastname       string     `gorm:"not null"`
-	IsAdmin        bool       `gorm:"default:false"`
-	Email          string     `gorm:"not null"`
+	ID             string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	Username       string      `gorm:"uniqueIndex;not null"`
+	Password       string      `gorm:"not null"`
+	Firstname      string      `gorm:"not null"`
+	Lastname       string      `gorm:"not null"`
+	IsAdmin        bool        `gorm:"default:false"`
+	Email          string      `gorm:"not null"`
 	ProfilePicture string
 	CoverPicture   string
 	About          string
@@ -64,27 +104,27 @@ type User struct {
 	Following      StringArray `gorm:"type:text[]"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	Posts          []Post    `gorm:"foreignKey:UserID"`
-	Chats          []Chat    `gorm:"many2many:user_chats"`
-	Messages       []Message `gorm:"foreignKey:SenderID"`
+	Posts          []Post      `gorm:"foreignKey:UserID"`
+	Chats          []Chat      `gorm:"many2many:user_chats"`
+	Messages       []Message   `gorm:"foreignKey:SenderID"`
 }
 
 type Post struct {
-	ID        string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	UserID    string    `gorm:"type:uuid;not null"`
+	ID        string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	UserID    string      `gorm:"type:uuid;not null"`
 	Desc      string
-	Likes     []string  `gorm:"type:uuid[]"`
+	Likes     UUIDArray   `gorm:"type:uuid[]"` // Updated to UUIDArray
 	Image     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
 type Chat struct {
-	ID        string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	Members   []string  `gorm:"type:uuid[]"`
+	ID        string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	Members   UUIDArray   `gorm:"type:uuid[]"` // Updated to UUIDArray
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	Messages  []Message `gorm:"foreignKey:ChatID"`
+	Messages  []Message   `gorm:"foreignKey:ChatID"`
 }
 
 type Message struct {
