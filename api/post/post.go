@@ -6,6 +6,7 @@ import (
 	"social-media-app/api/auth"
 	"social-media-app/api/models"
 	"social-media-app/config"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -37,15 +38,35 @@ func (h *PostHandler) CreatePost(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request"})
 	}
 
+	// Get authenticated user ID from JWT middleware
+	authUserID := c.Locals("user_id").(string)
+
+	// Ensure the UserID in the request matches the authenticated user
+	if req.UserID != authUserID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"message": "Cannot create post for another user"})
+	}
+
+	// Verify that the user exists in the database
+	var user models.User
+	if err := h.db.Where("id = ?", req.UserID).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "User not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to verify user: " + err.Error()})
+	}
+
+	// Create the post
 	post := models.Post{
 		UserID: req.UserID,
 		Desc:   req.Desc,
 		Image:  req.Image,
 	}
+
 	if err := h.db.Create(&post).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Failed to create post: " + err.Error()})
 	}
 
+	// Cache the post in Redis
 	postJSON, _ := json.Marshal(post)
 	h.redisClient.Set(context.Background(), "post:"+post.ID, postJSON, 3600)
 	return c.JSON(post)
@@ -122,49 +143,73 @@ func (h *PostHandler) DeletePost(c *fiber.Ctx) error {
 }
 
 func (h *PostHandler) LikePost(c *fiber.Ctx) error {
-	postID := c.Params("id")
-	userID := c.Locals("user_id").(string)
+    postID := c.Params("id")
+    userID := c.Locals("user_id").(string)
 
-	var post models.Post
-	if err := h.db.Where("id = ?", postID).First(&post).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Post not found"})
-	}
+    var post models.Post
+    if err := h.db.Where("id = ?", postID).First(&post).Error; err != nil {
+        return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Post not found"})
+    }
 
-	for i, liker := range post.Likes {
-		if liker == userID {
-			post.Likes = append(post.Likes[:i], post.Likes[i+1:]...)
-			if err := h.db.Save(&post).Error; err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
-			}
-			postJSON, _ := json.Marshal(post)
-			h.redisClient.Set(context.Background(), "post:"+postID, postJSON, 3600)
-			return c.JSON(fiber.Map{"message": "Post unliked"})
-		}
-	}
+    // Initialize Likes if nil
+    if post.Likes == nil {
+        post.Likes = []string{}
+    }
 
-	post.Likes = append(post.Likes, userID)
-	if err := h.db.Save(&post).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
-	}
+    for i, liker := range post.Likes {
+        if liker == userID {
+            post.Likes = append(post.Likes[:i], post.Likes[i+1:]...)
+            if err := h.db.Save(&post).Error; err != nil {
+                return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+            }
+            postJSON, _ := json.Marshal(post)
+            h.redisClient.Set(context.Background(), "post:"+postID, postJSON, 3600)
+            return c.JSON(fiber.Map{"message": "Post unliked"})
+        }
+    }
 
-	postJSON, _ := json.Marshal(post)
-	h.redisClient.Set(context.Background(), "post:"+postID, postJSON, 3600)
-	return c.JSON(fiber.Map{"message": "Post liked"})
+    post.Likes = append(post.Likes, userID)
+    if err := h.db.Save(&post).Error; err != nil {
+        return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+    }
+
+    postJSON, _ := json.Marshal(post)
+    h.redisClient.Set(context.Background(), "post:"+postID, postJSON, 3600)
+    return c.JSON(fiber.Map{"message": "Post liked"})
 }
 
 func (h *PostHandler) GetTimelinePosts(c *fiber.Ctx) error {
-	userID := c.Params("id")
-	var user models.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "User not found"})
-	}
+    userID := c.Params("id")
+    // Check Redis cache
+    cached, err := h.redisClient.Get(context.Background(), "timeline:"+userID).Result()
+    if err == nil {
+        var posts []models.Post
+        if err := json.Unmarshal([]byte(cached), &posts); err == nil {
+            return c.JSON(posts)
+        }
+    }
 
-	var posts []models.Post
-	if err := h.db.Where("user_id = ? OR user_id IN ?", userID, user.Following).Find(&posts).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
-	}
+    var user models.User
+    if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+        return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "User not found"})
+    }
 
-	return c.JSON(posts)
+    var posts []models.Post
+    if len(user.Following) == 0 {
+        if err := h.db.Where("user_id = ?", userID).Find(&posts).Error; err != nil {
+            return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+        }
+    } else {
+        followingIDs := []string(user.Following)
+        if err := h.db.Where("user_id = ? OR user_id IN (?)", userID, followingIDs).Find(&posts).Error; err != nil {
+            return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+        }
+    }
+
+    // Cache the result in Redis
+    postJSON, _ := json.Marshal(posts)
+    h.redisClient.Set(context.Background(), "timeline:"+userID, postJSON, 3600)
+    return c.JSON(posts)
 }
 
 func Setup(api fiber.Router, db *gorm.DB, redisClient *redis.Client) {

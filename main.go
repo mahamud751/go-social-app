@@ -13,6 +13,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+
+	"social-media-app/api/ws"
 )
 
 func main() {
@@ -20,6 +22,7 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to load config:", err)
 	}
+	
 
 	db, err := config.InitDB(cfg)
 	if err != nil {
@@ -32,6 +35,7 @@ func main() {
 	}
 
 	app := fiber.New()
+	ws.Setup(app.Group("/ws"))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
