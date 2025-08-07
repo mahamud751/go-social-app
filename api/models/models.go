@@ -107,21 +107,33 @@ type User struct {
 	Posts          []Post      `gorm:"foreignKey:UserID"`
 	Chats          []Chat      `gorm:"many2many:user_chats"`
 	Messages       []Message   `gorm:"foreignKey:SenderID"`
+	Comments       []Comment   `gorm:"foreignKey:UserID"` // Added relationship for comments
 }
 
 type Post struct {
 	ID        string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
 	UserID    string      `gorm:"type:uuid;not null"`
 	Desc      string
-	Likes     UUIDArray   `gorm:"type:uuid[]"` // Updated to UUIDArray
+	Likes     UUIDArray   `gorm:"type:uuid[]"`
 	Image     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Comments  []Comment   `gorm:"foreignKey:PostID"` // Added relationship for comments
+}
+
+type Comment struct {
+	ID        string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	PostID    string    `gorm:"type:uuid;not null"`
+	UserID    string    `gorm:"type:uuid;not null"`
+	Text      string    `gorm:"not null"`
+	ParentID  string    `gorm:"type:uuid"` // For replies, references another comment
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
 type Chat struct {
 	ID        string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	Members   UUIDArray   `gorm:"type:uuid[]"` // Updated to UUIDArray
+	Members   UUIDArray   `gorm:"type:uuid[]"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Messages  []Message   `gorm:"foreignKey:ChatID"`
@@ -143,7 +155,7 @@ type Product struct {
 	DesktopIcon string
 	BrandIcon  string
 	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	UpdatedAt time.Time
 }
 
 func (u *User) BeforeCreate(tx *gorm.DB) (err error) {
@@ -177,6 +189,13 @@ func (m *Message) BeforeCreate(tx *gorm.DB) (err error) {
 func (p *Product) BeforeCreate(tx *gorm.DB) (err error) {
 	if p.ID == "" {
 		p.ID = uuid.New().String()
+	}
+	return
+}
+
+func (c *Comment) BeforeCreate(tx *gorm.DB) (err error) {
+	if c.ID == "" {
+		c.ID = uuid.New().String()
 	}
 	return
 }

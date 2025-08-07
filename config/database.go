@@ -11,13 +11,11 @@ func InitDB(cfg *Config) (*gorm.DB, error) {
 	db, err := gorm.Open(postgres.New(postgres.Config{
 		DSN:                  cfg.DatabaseURL,
 		PreferSimpleProtocol: true, // disables statement caching
-		
-		
 	}), &gorm.Config{})
 	
 	if err != nil {
 		return nil, err
 	}
-	db.AutoMigrate(&models.User{}, &models.Post{}, &models.Chat{}, &models.Message{}, &models.Product{})
+	db.AutoMigrate(&models.User{}, &models.Post{}, &models.Chat{}, &models.Message{}, &models.Product{}, &models.Comment{}) // Added Comment model
 	return db, nil
 }
