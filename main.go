@@ -8,6 +8,7 @@ import (
 	"social-media-app/api/post"
 	"social-media-app/api/comment"
 	"social-media-app/api/friend"
+	"social-media-app/api/notification"
 
 	"social-media-app/api/upload"
 	"social-media-app/api/user"
@@ -49,6 +50,7 @@ func main() {
 		return c.JSON(fiber.Map{"message": "hello users"})
 	})
 
+
 	api := app.Group("/api")
 	auth.Setup(api, db, redisClient, cfg)
 	user.Setup(api, db, redisClient)
@@ -57,6 +59,7 @@ func main() {
 	message.Setup(api, db, redisClient)
 	comment.Setup(api, db, redisClient)
 	friend.Setup(api, db, redisClient)
+	notification.Setup(api, db, redisClient)
 	upload.Setup(api)
 
 

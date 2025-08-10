@@ -1,4 +1,3 @@
-
 package comment
 
 import (
@@ -14,10 +13,10 @@ import (
 )
 
 type CreateCommentRequest struct {
-	PostID   string  `json:"postId" validate:"required"`
-	UserID   string  `json:"userId" validate:"required"`
-	Text     string  `json:"text" validate:"required"`
-	ParentID *string `json:"parentId"`
+	PostID   string `json:"postId" validate:"required"`
+	UserID   string `json:"userId" validate:"required"`
+	Text     string `json:"text" validate:"required"`
+	ParentID string `json:"parentId"` // Optional, for replies
 }
 
 type UpdateCommentRequest struct {
@@ -47,8 +46,8 @@ func (h *CommentHandler) CreateComment(c *fiber.Ctx) error {
 	if _, err := uuid.Parse(req.UserID); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid userId format"})
 	}
-	if req.ParentID != nil && *req.ParentID != "" {
-		if _, err := uuid.Parse(*req.ParentID); err != nil {
+	if req.ParentID != "" {
+		if _, err := uuid.Parse(req.ParentID); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid parentId format"})
 		}
 	}
@@ -66,9 +65,9 @@ func (h *CommentHandler) CreateComment(c *fiber.Ctx) error {
 	}
 
 	// Verify parent comment exists if parentId is provided
-	if req.ParentID != nil && *req.ParentID != "" {
+	if req.ParentID != "" {
 		var parentComment models.Comment
-		if err := h.db.Where("id = ? AND post_id = ?", *req.ParentID, req.PostID).First(&parentComment).Error; err != nil {
+		if err := h.db.Where("id = ? AND post_id = ?", req.ParentID, req.PostID).First(&parentComment).Error; err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Parent comment not found"})
 		}
 	}
@@ -78,21 +77,74 @@ func (h *CommentHandler) CreateComment(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"message": "Access denied: You can only create comments as yourself"})
 	}
 
+	// Convert req.ParentID (string) to *string
+	var parentID *string
+	if req.ParentID != "" {
+		parentID = &req.ParentID
+	}
+
 	comment := models.Comment{
 		PostID:   req.PostID,
 		UserID:   req.UserID,
 		Text:     req.Text,
-		ParentID: req.ParentID,
-		Likes:    models.UUIDArray{}, // Initialize empty Likes array
+		ParentID: parentID,
 	}
 
 	if err := h.db.Create(&comment).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
 
+	// Create notification for post owner
+	var commenter models.User
+	var notifications []models.Notification
+	if err := h.db.Where("id = ?", req.UserID).First(&commenter).Error; err == nil {
+		if post.UserID != req.UserID { // Don't notify self
+			notification := models.Notification{
+				UserID:     post.UserID,
+				Type:       "comment",
+				FromUserID: req.UserID,
+				PostID:     &req.PostID,
+				CommentID:  &comment.ID,
+				Message:    commenter.Username + " commented on your post",
+				Read:       false,
+			}
+			h.db.Create(&notification)
+			notifications = append(notifications, notification)
+		}
+	}
+
+	// If it's a reply, notify parent comment owner
+	if req.ParentID != "" {
+		var parentComment models.Comment
+		if err := h.db.Where("id = ?", req.ParentID).First(&parentComment).Error; err == nil {
+			if parentComment.UserID != req.UserID && parentComment.UserID != post.UserID { // Don't notify self or duplicate
+				notification := models.Notification{
+					UserID:     parentComment.UserID,
+					Type:       "comment_reply",
+					FromUserID: req.UserID,
+					PostID:     &req.PostID,
+					CommentID:  &comment.ID,
+					Message:    commenter.Username + " replied to your comment",
+					Read:       false,
+				}
+				h.db.Create(&notification)
+				notifications = append(notifications, notification)
+			}
+		}
+	}
+
+	// Publish notifications via Redis for WebSocket
+	for _, notification := range notifications {
+		notificationJSON, _ := json.Marshal(notification)
+		h.redisClient.Publish(context.Background(), "notification:"+notification.UserID, notificationJSON)
+	}
+
 	// Cache the comment
 	commentJSON, _ := json.Marshal(comment)
 	h.redisClient.Set(context.Background(), "comment:"+comment.ID, commentJSON, 3600)
+
+	// Invalidate post comments cache
+	h.redisClient.Del(context.Background(), "comments:post:"+req.PostID)
 
 	return c.JSON(comment)
 }
@@ -184,54 +236,71 @@ func (h *CommentHandler) DeleteComment(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Comment deleted successfully"})
 }
 
-// LikeComment handles liking/unliking a comment
+// LikeComment allows users to like or unlike a comment
 func (h *CommentHandler) LikeComment(c *fiber.Ctx) error {
 	commentID := c.Params("id")
 	userID := c.Locals("user_id").(string)
-
-	if _, err := uuid.Parse(commentID); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid commentId format"})
-	}
-	if _, err := uuid.Parse(userID); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid userId format"})
-	}
 
 	var comment models.Comment
 	if err := h.db.Where("id = ?", commentID).First(&comment).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Comment not found"})
 	}
 
-	// Toggle like
-	likes := comment.Likes
-	if index := findIndex(likes, userID); index >= 0 {
-		// Unlike: Remove userID from likes
-		comment.Likes = append(likes[:index], likes[index+1:]...)
-	} else {
-		// Like: Add userID to likes
-		comment.Likes = append(likes, userID)
+	// Initialize Likes if nil
+	if comment.Likes == nil {
+		comment.Likes = []string{}
 	}
 
+	// Check if user already liked the comment
+	for i, liker := range comment.Likes {
+		if liker == userID {
+			// Unlike: Remove userID from likes
+			comment.Likes = append(comment.Likes[:i], comment.Likes[i+1:]...)
+			if err := h.db.Save(&comment).Error; err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+			}
+			// Update cache
+			commentJSON, _ := json.Marshal(comment)
+			h.redisClient.Set(context.Background(), "comment:"+commentID, commentJSON, 3600)
+			h.redisClient.Del(context.Background(), "comments:post:"+comment.PostID)
+			return c.JSON(fiber.Map{"message": "Comment unliked"})
+		}
+	}
+
+	// Like: Add userID to likes
+	comment.Likes = append(comment.Likes, userID)
 	if err := h.db.Save(&comment).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
 
+	// Create notification for comment owner
+	var liker models.User
+	var notification models.Notification
+	if err := h.db.Where("id = ?", userID).First(&liker).Error; err == nil {
+		if comment.UserID != userID { // Don't notify self
+			notification = models.Notification{
+				UserID:     comment.UserID,
+				Type:       "comment_like",
+				FromUserID: userID,
+				PostID:     &comment.PostID,
+				CommentID:  &comment.ID,
+				Message:    liker.Username + " liked your comment",
+				Read:       false,
+			}
+			h.db.Create(&notification)
+		}
+	}
+
+	// Publish notification via Redis for WebSocket
+	notificationJSON, _ := json.Marshal(notification)
+	h.redisClient.Publish(context.Background(), "notification:"+comment.UserID, notificationJSON)
+
 	// Update cache
 	commentJSON, _ := json.Marshal(comment)
 	h.redisClient.Set(context.Background(), "comment:"+commentID, commentJSON, 3600)
-	// Invalidate post comments cache
 	h.redisClient.Del(context.Background(), "comments:post:"+comment.PostID)
 
-	return c.JSON(comment)
-}
-
-// findIndex helper function to locate a string in a slice
-func findIndex(slice []string, value string) int {
-	for i, v := range slice {
-		if v == value {
-			return i
-		}
-	}
-	return -1
+	return c.JSON(fiber.Map{"message": "Comment liked"})
 }
 
 // Setup configures the comment routes
@@ -246,5 +315,5 @@ func Setup(api fiber.Router, db *gorm.DB, redisClient *redis.Client) {
 	comment.Get("/post/:postId", handler.GetComments)
 	comment.Put("/:id", auth.JWTMiddleware(cfg), handler.UpdateComment)
 	comment.Delete("/:id", auth.JWTMiddleware(cfg), handler.DeleteComment)
-	comment.Post("/:id/like", auth.JWTMiddleware(cfg), handler.LikeComment) // Added like endpoint
+	comment.Post("/:id/like", auth.JWTMiddleware(cfg), handler.LikeComment)
 }

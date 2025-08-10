@@ -6,7 +6,6 @@ import (
 	"social-media-app/api/auth"
 	"social-media-app/api/models"
 	"social-media-app/config"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -173,6 +172,27 @@ func (h *PostHandler) LikePost(c *fiber.Ctx) error {
         return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
     }
 
+    // Create notification for post owner
+    var liker models.User
+    var notification models.Notification
+    if err := h.db.Where("id = ?", userID).First(&liker).Error; err == nil {
+        if post.UserID != userID { // Don't notify self
+            notification = models.Notification{
+                UserID:     post.UserID,
+                Type:       "like",
+                FromUserID: userID,
+                PostID:     &post.ID,
+                Message:    liker.Username + " liked your post",
+                Read:       false,
+            }
+            h.db.Create(&notification)
+        }
+    }
+
+    // Publish notification via Redis for WebSocket
+    notificationJSON, _ := json.Marshal(notification)
+    h.redisClient.Publish(context.Background(), "notification:"+post.UserID, notificationJSON)
+
     postJSON, _ := json.Marshal(post)
     h.redisClient.Set(context.Background(), "post:"+postID, postJSON, 3600)
     return c.JSON(fiber.Map{"message": "Post liked"})
@@ -201,7 +221,7 @@ func (h *PostHandler) GetTimelinePosts(c *fiber.Ctx) error {
         }
     } else {
         followingIDs := []string(user.Following)
-        if err := h.db.Where("user_id = ? OR user_id IN (?)", userID, followingIDs).Find(&posts).Error; err != nil {
+        if err := h.db.Where("user_id = ? OR user_id IN ?", userID, followingIDs).Find(&posts).Error; err != nil {
             return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
         }
     }

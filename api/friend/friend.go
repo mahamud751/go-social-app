@@ -64,9 +64,23 @@ func (h *FriendRequestHandler) SendFriendRequest(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
 
-	// Publish notification via Redis
-	requestJSON, _ := json.Marshal(friendRequest)
-	h.redisClient.Publish(context.Background(), "friend_request:"+req.ReceiverID, requestJSON)
+	// Create notification for receiver
+	var sender models.User
+	var notification models.Notification
+	if err := h.db.Where("id = ?", senderID).First(&sender).Error; err == nil {
+		notification = models.Notification{
+			UserID:     req.ReceiverID,
+			Type:       "friend_request",
+			FromUserID: senderID,
+			Message:    sender.Username + " sent you a friend request",
+			Read:       false,
+		}
+		h.db.Create(&notification)
+	}
+
+	// Publish notification via Redis for WebSocket
+	notificationJSON, _ := json.Marshal(notification)
+	h.redisClient.Publish(context.Background(), "notification:"+req.ReceiverID, notificationJSON)
 
 	return c.JSON(fiber.Map{"message": "Friend request sent", "friendRequest": friendRequest})
 }
@@ -137,7 +151,7 @@ func (h *FriendRequestHandler) ConfirmFriendRequest(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
 
-	// Add to Friends field (or update Followers/Following)
+	// Add to Friends field
 	var sender, receiver models.User
 	if err := tx.Where("id = ?", friendRequest.SenderID).First(&sender).Error; err != nil {
 		tx.Rollback()
@@ -169,6 +183,16 @@ func (h *FriendRequestHandler) ConfirmFriendRequest(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
 
+	// Create notification for sender
+	notification := models.Notification{
+		UserID:     friendRequest.SenderID,
+		Type:       "friend_accept",
+		FromUserID: userID,
+		Message:    receiver.Username + " accepted your friend request",
+		Read:       false,
+	}
+	tx.Create(&notification)
+
 	if err := tx.Commit().Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
@@ -177,9 +201,9 @@ func (h *FriendRequestHandler) ConfirmFriendRequest(c *fiber.Ctx) error {
 	h.redisClient.Del(context.Background(), "user:"+friendRequest.SenderID)
 	h.redisClient.Del(context.Background(), "user:"+friendRequest.ReceiverID)
 
-	// Publish notification
-	requestJSON, _ := json.Marshal(friendRequest)
-	h.redisClient.Publish(context.Background(), "friend_request:"+friendRequest.SenderID, requestJSON)
+	// Publish notification via Redis for WebSocket
+	notificationJSON, _ := json.Marshal(notification)
+	h.redisClient.Publish(context.Background(), "notification:"+friendRequest.SenderID, notificationJSON)
 
 	return c.JSON(fiber.Map{"message": "Friend request confirmed", "chatId": chat.ID})
 }
@@ -204,8 +228,8 @@ func (h *FriendRequestHandler) RejectFriendRequest(c *fiber.Ctx) error {
 	}
 
 	// Publish notification
-	requestJSON, _ := json.Marshal(friendRequest)
-	h.redisClient.Publish(context.Background(), "friend_request:"+friendRequest.SenderID, requestJSON)
+	notificationJSON, _ := json.Marshal(friendRequest)
+	h.redisClient.Publish(context.Background(), "friend_request:"+friendRequest.SenderID, notificationJSON)
 
 	return c.JSON(fiber.Map{"message": "Friend request rejected"})
 }

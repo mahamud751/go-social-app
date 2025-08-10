@@ -160,6 +160,19 @@ type FriendRequest struct {
 	UpdatedAt   time.Time
 }
 
+type Notification struct {
+	ID          string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	UserID      string    `gorm:"type:uuid;not null"` // Receiver of the notification
+	Type        string    `gorm:"not null"` // like, comment, friend_request, friend_accept
+	FromUserID  string    `gorm:"type:uuid;not null"` // Sender of the action
+	PostID      *string   `gorm:"type:uuid"` // Optional, for like/comment
+	CommentID   *string   `gorm:"type:uuid"` // Optional, for comment
+	Message     string    `gorm:"not null"` // e.g., "User X liked your post"
+	Read        bool      `gorm:"default:false"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
 type Product struct {
 	ID         string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
 	Title      string
@@ -201,6 +214,13 @@ func (m *Message) BeforeCreate(tx *gorm.DB) (err error) {
 func (f *FriendRequest) BeforeCreate(tx *gorm.DB) (err error) {
 	if f.ID == "" {
 		f.ID = uuid.New().String()
+	}
+	return
+}
+
+func (n *Notification) BeforeCreate(tx *gorm.DB) (err error) {
+	if n.ID == "" {
+		n.ID = uuid.New().String()
 	}
 	return
 }
