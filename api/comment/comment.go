@@ -1,3 +1,4 @@
+
 package comment
 
 import (
@@ -6,7 +7,6 @@ import (
 	"social-media-app/api/auth"
 	"social-media-app/api/models"
 	"social-media-app/config"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -14,10 +14,10 @@ import (
 )
 
 type CreateCommentRequest struct {
-	PostID   string `json:"postId" validate:"required"`
-	UserID   string `json:"userId" validate:"required"`
-	Text     string `json:"text" validate:"required"`
-	ParentID string `json:"parentId"` // Optional, for replies
+	PostID   string  `json:"postId" validate:"required"`
+	UserID   string  `json:"userId" validate:"required"`
+	Text     string  `json:"text" validate:"required"`
+	ParentID *string `json:"parentId"`
 }
 
 type UpdateCommentRequest struct {
@@ -47,8 +47,8 @@ func (h *CommentHandler) CreateComment(c *fiber.Ctx) error {
 	if _, err := uuid.Parse(req.UserID); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid userId format"})
 	}
-	if req.ParentID != "" {
-		if _, err := uuid.Parse(req.ParentID); err != nil {
+	if req.ParentID != nil && *req.ParentID != "" {
+		if _, err := uuid.Parse(*req.ParentID); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid parentId format"})
 		}
 	}
@@ -66,9 +66,9 @@ func (h *CommentHandler) CreateComment(c *fiber.Ctx) error {
 	}
 
 	// Verify parent comment exists if parentId is provided
-	if req.ParentID != "" {
+	if req.ParentID != nil && *req.ParentID != "" {
 		var parentComment models.Comment
-		if err := h.db.Where("id = ? AND post_id = ?", req.ParentID, req.PostID).First(&parentComment).Error; err != nil {
+		if err := h.db.Where("id = ? AND post_id = ?", *req.ParentID, req.PostID).First(&parentComment).Error; err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Parent comment not found"})
 		}
 	}
@@ -83,6 +83,7 @@ func (h *CommentHandler) CreateComment(c *fiber.Ctx) error {
 		UserID:   req.UserID,
 		Text:     req.Text,
 		ParentID: req.ParentID,
+		Likes:    models.UUIDArray{}, // Initialize empty Likes array
 	}
 
 	if err := h.db.Create(&comment).Error; err != nil {
@@ -183,6 +184,56 @@ func (h *CommentHandler) DeleteComment(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Comment deleted successfully"})
 }
 
+// LikeComment handles liking/unliking a comment
+func (h *CommentHandler) LikeComment(c *fiber.Ctx) error {
+	commentID := c.Params("id")
+	userID := c.Locals("user_id").(string)
+
+	if _, err := uuid.Parse(commentID); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid commentId format"})
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid userId format"})
+	}
+
+	var comment models.Comment
+	if err := h.db.Where("id = ?", commentID).First(&comment).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Comment not found"})
+	}
+
+	// Toggle like
+	likes := comment.Likes
+	if index := findIndex(likes, userID); index >= 0 {
+		// Unlike: Remove userID from likes
+		comment.Likes = append(likes[:index], likes[index+1:]...)
+	} else {
+		// Like: Add userID to likes
+		comment.Likes = append(likes, userID)
+	}
+
+	if err := h.db.Save(&comment).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+	}
+
+	// Update cache
+	commentJSON, _ := json.Marshal(comment)
+	h.redisClient.Set(context.Background(), "comment:"+commentID, commentJSON, 3600)
+	// Invalidate post comments cache
+	h.redisClient.Del(context.Background(), "comments:post:"+comment.PostID)
+
+	return c.JSON(comment)
+}
+
+// findIndex helper function to locate a string in a slice
+func findIndex(slice []string, value string) int {
+	for i, v := range slice {
+		if v == value {
+			return i
+		}
+	}
+	return -1
+}
+
 // Setup configures the comment routes
 func Setup(api fiber.Router, db *gorm.DB, redisClient *redis.Client) {
 	handler := NewCommentHandler(db, redisClient)
@@ -195,4 +246,5 @@ func Setup(api fiber.Router, db *gorm.DB, redisClient *redis.Client) {
 	comment.Get("/post/:postId", handler.GetComments)
 	comment.Put("/:id", auth.JWTMiddleware(cfg), handler.UpdateComment)
 	comment.Delete("/:id", auth.JWTMiddleware(cfg), handler.DeleteComment)
+	comment.Post("/:id/like", auth.JWTMiddleware(cfg), handler.LikeComment) // Added like endpoint
 }

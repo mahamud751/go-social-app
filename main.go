@@ -6,6 +6,8 @@ import (
 	"social-media-app/api/chat"
 	"social-media-app/api/message"
 	"social-media-app/api/post"
+	"social-media-app/api/comment"
+	"social-media-app/api/friend"
 
 	"social-media-app/api/upload"
 	"social-media-app/api/user"
@@ -53,6 +55,8 @@ func main() {
 	post.Setup(api, db, redisClient)
 	chat.Setup(api, db, redisClient)
 	message.Setup(api, db, redisClient)
+	comment.Setup(api, db, redisClient)
+	friend.Setup(api, db, redisClient)
 	upload.Setup(api)
 
 

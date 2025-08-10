@@ -24,7 +24,6 @@ func (a *StringArray) Scan(value interface{}) error {
 		return fmt.Errorf("failed to scan array: not a string")
 	}
 	
-	// Remove curly braces
 	str = strings.TrimPrefix(str, "{")
 	str = strings.TrimSuffix(str, "}")
 	
@@ -59,7 +58,6 @@ func (a *UUIDArray) Scan(value interface{}) error {
 		return fmt.Errorf("failed to scan uuid array: not a string")
 	}
 	
-	// Remove curly braces
 	str = strings.TrimPrefix(str, "{")
 	str = strings.TrimSuffix(str, "}")
 	
@@ -78,6 +76,9 @@ func (a UUIDArray) Value() (driver.Value, error) {
 		return "{}", nil
 	}
 	for _, v := range a {
+		if v == "" {
+			return nil, fmt.Errorf("empty uuid in array")
+		}
 		if _, err := uuid.Parse(v); err != nil {
 			return nil, fmt.Errorf("invalid uuid in array: %s", v)
 		}
@@ -102,12 +103,13 @@ type User struct {
 	Country        string
 	Followers      StringArray `gorm:"type:text[]"`
 	Following      StringArray `gorm:"type:text[]"`
+	Friends        StringArray `gorm:"type:text[]"` // Added for confirmed friends
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	Posts          []Post      `gorm:"foreignKey:UserID"`
 	Chats          []Chat      `gorm:"many2many:user_chats"`
 	Messages       []Message   `gorm:"foreignKey:SenderID"`
-	Comments       []Comment   `gorm:"foreignKey:UserID"` // Added relationship for comments
+	Comments       []Comment   `gorm:"foreignKey:UserID"`
 }
 
 type Post struct {
@@ -118,15 +120,16 @@ type Post struct {
 	Image     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	Comments  []Comment   `gorm:"foreignKey:PostID"` // Added relationship for comments
+	Comments  []Comment   `gorm:"foreignKey:PostID"`
 }
 
 type Comment struct {
-	ID        string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	PostID    string    `gorm:"type:uuid;not null"`
-	UserID    string    `gorm:"type:uuid;not null"`
-	Text      string    `gorm:"not null"`
-	ParentID  string    `gorm:"type:uuid"` // For replies, references another comment
+	ID        string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	PostID    string      `gorm:"type:uuid;not null"`
+	UserID    string      `gorm:"type:uuid;not null"`
+	Text      string      `gorm:"not null"`
+	ParentID  *string     `gorm:"type:uuid"`
+	Likes     UUIDArray   `gorm:"type:uuid[]"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -146,6 +149,15 @@ type Message struct {
 	Text      string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+type FriendRequest struct {
+	ID          string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	SenderID    string    `gorm:"type:uuid;not null"`
+	ReceiverID  string    `gorm:"type:uuid;not null"`
+	Status      string    `gorm:"not null;default:pending"` // pending, accepted, rejected
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type Product struct {
@@ -182,6 +194,13 @@ func (c *Chat) BeforeCreate(tx *gorm.DB) (err error) {
 func (m *Message) BeforeCreate(tx *gorm.DB) (err error) {
 	if m.ID == "" {
 		m.ID = uuid.New().String()
+	}
+	return
+}
+
+func (f *FriendRequest) BeforeCreate(tx *gorm.DB) (err error) {
+	if f.ID == "" {
+		f.ID = uuid.New().String()
 	}
 	return
 }

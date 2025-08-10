@@ -6,7 +6,7 @@ import (
 	"social-media-app/api/auth"
 	"social-media-app/api/models"
 	"social-media-app/config"
-
+	"strings" // Added strings import
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
 	"github.com/google/uuid"
@@ -40,43 +40,75 @@ func NewMessageHandler(db *gorm.DB, redisClient *redis.Client) *MessageHandler {
 }
 
 func (h *MessageHandler) AddMessage(c *fiber.Ctx) error {
-    var req MessageRequest
-    if err := c.BodyParser(&req); err != nil {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request"})
-    }
+	var req MessageRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request"})
+	}
 
-    // Validate UUIDs
-    if _, err := uuid.Parse(req.ChatID); err != nil {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid chatId format"})
-    }
-    if _, err := uuid.Parse(req.SenderID); err != nil {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid senderId format"})
-    }
+	// Validate UUIDs
+	if _, err := uuid.Parse(req.ChatID); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid chatId format"})
+	}
+	if _, err := uuid.Parse(req.SenderID); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid senderId format"})
+	}
 
-    // Verify chat exists
-    var chat models.Chat
-    if err := h.db.Where("id = ?", req.ChatID).First(&chat).Error; err != nil {
-        return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Chat not found"})
-    }
+	// Verify chat exists
+	var chat models.Chat
+	if err := h.db.Where("id = ?", req.ChatID).First(&chat).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Chat not found"})
+	}
 
-    // Verify sender exists
-    var sender models.User
-    if err := h.db.Where("id = ?", req.SenderID).First(&sender).Error; err != nil {
-        return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Sender not found"})
-    }
+	// Verify sender exists
+	var sender models.User
+	if err := h.db.Where("id = ?", req.SenderID).First(&sender).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Sender not found"})
+	}
 
-    message := models.Message{
-        ChatID:   req.ChatID,
-        SenderID: req.SenderID,
-        Text:     req.Text,
-    }
-    if err := h.db.Create(&message).Error; err != nil {
-        return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
-    }
+	// Check if sender is a member of the chat
+	isMember := false
+	for _, memberID := range chat.Members {
+		if memberID == req.SenderID {
+			isMember = true
+			break
+		}
+	}
+	if !isMember {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"message": "Sender is not a member of this chat"})
+	}
 
-    messageJSON, _ := json.Marshal(message)
-    h.redisClient.Publish(context.Background(), "chat:"+req.ChatID, messageJSON)
-    return c.JSON(message)
+	// Check if users are friends (using Friends field)
+	var receiver models.User
+	for _, memberID := range chat.Members {
+		if memberID != req.SenderID {
+			if err := h.db.Where("id = ?", memberID).First(&receiver).Error; err != nil {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Receiver not found"})
+			}
+			isFriend := false
+			for _, friendID := range sender.Friends {
+				if friendID == memberID {
+					isFriend = true
+					break
+				}
+			}
+			if !isFriend {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"message": "Users must be friends to send messages"})
+			}
+		}
+	}
+
+	message := models.Message{
+		ChatID:   req.ChatID,
+		SenderID: req.SenderID,
+		Text:     req.Text,
+	}
+	if err := h.db.Create(&message).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+	}
+
+	messageJSON, _ := json.Marshal(message)
+	h.redisClient.Publish(context.Background(), "chat:"+req.ChatID, messageJSON)
+	return c.JSON(message)
 }
 
 func (h *MessageHandler) GetMessages(c *fiber.Ctx) error {
@@ -99,7 +131,7 @@ func (h *MessageHandler) HandleWebSocket(c *websocket.Conn) {
 	h.redisClient.Publish(context.Background(), "users", h.getActiveUsersJSON())
 
 	ctx := context.Background()
-	channels := []string{}
+	channels := []string{"friend_request:" + userID}
 	var chatIDs []string
 	if err := h.db.Model(&models.Chat{}).Where("? = ANY(members)", userID).Pluck("id", &chatIDs).Error; err != nil {
 		c.WriteJSON(fiber.Map{"message": "Failed to fetch chats"})
@@ -115,9 +147,23 @@ func (h *MessageHandler) HandleWebSocket(c *websocket.Conn) {
 	go func() {
 		ch := pubsub.Channel()
 		for msg := range ch {
-			var message models.Message
-			if err := json.Unmarshal([]byte(msg.Payload), &message); err == nil {
-				c.WriteJSON(message)
+			var data interface{}
+			if strings.HasPrefix(msg.Channel, "chat:") {
+				var message models.Message
+				if err := json.Unmarshal([]byte(msg.Payload), &message); err == nil {
+					data = message
+				}
+			} else if strings.HasPrefix(msg.Channel, "friend_request:") {
+				var friendRequest models.FriendRequest
+				if err := json.Unmarshal([]byte(msg.Payload), &friendRequest); err == nil {
+					data = fiber.Map{
+						"type":         "friend_request",
+						"friendRequest": friendRequest,
+					}
+				}
+			}
+			if data != nil {
+				c.WriteJSON(data)
 			}
 		}
 	}()
@@ -128,6 +174,61 @@ func (h *MessageHandler) HandleWebSocket(c *websocket.Conn) {
 			delete(h.activeUsers, userID)
 			h.redisClient.Publish(context.Background(), "users", h.getActiveUsersJSON())
 			break
+		}
+
+		// Validate and save message
+		if _, err := uuid.Parse(req.ChatID); err != nil {
+			c.WriteJSON(fiber.Map{"message": "Invalid chatId format"})
+			continue
+		}
+		if _, err := uuid.Parse(req.SenderID); err != nil {
+			c.WriteJSON(fiber.Map{"message": "Invalid senderId format"})
+			continue
+		}
+
+		var chat models.Chat
+		if err := h.db.Where("id = ?", req.ChatID).First(&chat).Error; err != nil {
+			c.WriteJSON(fiber.Map{"message": "Chat not found"})
+			continue
+		}
+
+		isMember := false
+		for _, memberID := range chat.Members {
+			if memberID == req.SenderID {
+				isMember = true
+				break
+			}
+		}
+		if !isMember {
+			c.WriteJSON(fiber.Map{"message": "Sender is not a member of this chat"})
+			continue
+		}
+
+		var sender models.User
+		if err := h.db.Where("id = ?", req.SenderID).First(&sender).Error; err != nil {
+			c.WriteJSON(fiber.Map{"message": "Sender not found"})
+			continue
+		}
+
+		var receiver models.User
+		for _, memberID := range chat.Members {
+			if memberID != req.SenderID {
+				if err := h.db.Where("id = ?", memberID).First(&receiver).Error; err != nil {
+					c.WriteJSON(fiber.Map{"message": "Receiver not found"})
+					continue
+				}
+				isFriend := false
+				for _, friendID := range sender.Friends {
+					if friendID == memberID {
+						isFriend = true
+						break
+					}
+				}
+				if !isFriend {
+					c.WriteJSON(fiber.Map{"message": "Users must be friends to send messages"})
+					continue
+				}
+			}
 		}
 
 		message := models.Message{
@@ -158,6 +259,6 @@ func Setup(api fiber.Router, db *gorm.DB, redisClient *redis.Client) {
 	}
 	message := api.Group("/message")
 	message.Post("/", auth.JWTMiddleware(cfg), handler.AddMessage)
-	message.Get("/:chatId", handler.GetMessages)
+	message.Get("/:chatId", auth.JWTMiddleware(cfg), handler.GetMessages)
 	api.Get("/ws", websocket.New(handler.HandleWebSocket))
 }
