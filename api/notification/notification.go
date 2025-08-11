@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"social-media-app/api/auth"
 	"social-media-app/api/models"
+	"social-media-app/api/ws"
 	"social-media-app/config"
+	"time"
+
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -18,6 +22,92 @@ type NotificationHandler struct {
 
 func NewNotificationHandler(db *gorm.DB, redisClient *redis.Client) *NotificationHandler {
 	return &NotificationHandler{db, redisClient}
+}
+
+// CreateNotification creates a new notification and sends it via WebSocket
+func (h *NotificationHandler) CreateNotification(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	var req struct {
+		ReceiverID string `json:"receiverId" validate:"required"`
+		Type       string `json:"type" validate:"required"`
+		Message    string `json:"message" validate:"required"`
+		PostID     string `json:"postId"`
+		CommentID  string `json:"commentId"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid request"})
+	}
+
+	// Validate receiver ID
+	if _, err := uuid.Parse(req.ReceiverID); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Invalid receiverId format"})
+	}
+
+	// Verify receiver exists
+	var receiver models.User
+	if err := h.db.Where("id = ?", req.ReceiverID).First(&receiver).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"message": "Receiver not found"})
+	}
+
+	// Convert string to *string for PostID and CommentID
+	var postID, commentID *string
+	if req.PostID != "" {
+		postID = &req.PostID
+	}
+	if req.CommentID != "" {
+		commentID = &req.CommentID
+	}
+
+	notification := models.Notification{
+		ID:         uuid.New().String(),
+		UserID:     req.ReceiverID,
+		Type:       req.Type,
+		FromUserID: userID,
+		PostID:     postID,
+		CommentID:  commentID,
+		Message:    req.Message,
+		Read:       false,
+		CreatedAt:  time.Now(),
+	}
+
+	if err := h.db.Create(&notification).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+	}
+
+	// Invalidate cache
+	h.redisClient.Del(context.Background(), "notifications:"+req.ReceiverID)
+
+	// Prepare notification payload
+	notificationJSON, _ := json.Marshal(fiber.Map{
+		"id":           notification.ID,
+		"type":         notification.Type,
+		"fromUserId":   notification.FromUserID,
+		"fromUserName": h.getUsername(notification.FromUserID),
+		"postId":       notification.PostID,
+		"commentId":    notification.CommentID,
+		"message":      notification.Message,
+		"read":         notification.Read,
+		"createdAt":    notification.CreatedAt,
+	})
+
+	// Publish to Redis for WebSocket
+	h.redisClient.Publish(context.Background(), "notification:"+req.ReceiverID, notificationJSON)
+
+	// Send via WebSocket
+	ws.SendNotification(req.ReceiverID, fiber.Map{
+		"id":           notification.ID,
+		"type":         notification.Type,
+		"fromUserId":   notification.FromUserID,
+		"fromUserName": h.getUsername(notification.FromUserID),
+		"postId":       notification.PostID,
+		"commentId":    notification.CommentID,
+		"message":      notification.Message,
+		"read":         notification.Read,
+		"createdAt":    notification.CreatedAt,
+	})
+
+	return c.JSON(fiber.Map{"message": "Notification created", "notification": notification})
 }
 
 // GetNotifications retrieves all notifications for the current user
@@ -96,10 +186,42 @@ func (h *NotificationHandler) MarkNotificationAsRead(c *fiber.Ctx) error {
 	h.redisClient.Del(context.Background(), "notifications:"+userID)
 
 	// Publish updated notification to Redis for WebSocket
-	notificationJSON, _ := json.Marshal(notification)
+	notificationJSON, _ := json.Marshal(fiber.Map{
+		"id":           notification.ID,
+		"type":         notification.Type,
+		"fromUserId":   notification.FromUserID,
+		"fromUserName": h.getUsername(notification.FromUserID),
+		"postId":       notification.PostID,
+		"commentId":    notification.CommentID,
+		"message":      notification.Message,
+		"read":         notification.Read,
+		"createdAt":    notification.CreatedAt,
+	})
 	h.redisClient.Publish(context.Background(), "notification:"+userID, notificationJSON)
 
+	// Send via WebSocket
+	ws.SendNotification(userID, fiber.Map{
+		"id":           notification.ID,
+		"type":         notification.Type,
+		"fromUserId":   notification.FromUserID,
+		"fromUserName": h.getUsername(notification.FromUserID),
+		"postId":       notification.PostID,
+		"commentId":    notification.CommentID,
+		"message":      notification.Message,
+		"read":         notification.Read,
+		"createdAt":    notification.CreatedAt,
+	})
+
 	return c.JSON(fiber.Map{"message": "Notification marked as read"})
+}
+
+// getUsername fetches the username for a given user ID
+func (h *NotificationHandler) getUsername(userID string) string {
+	var user models.User
+	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return ""
+	}
+	return user.Username
 }
 
 // Setup configures the notification routes
@@ -112,4 +234,5 @@ func Setup(api fiber.Router, db *gorm.DB, redisClient *redis.Client) {
 	notification := api.Group("/notification")
 	notification.Get("/", auth.JWTMiddleware(cfg), handler.GetNotifications)
 	notification.Put("/:id/read", auth.JWTMiddleware(cfg), handler.MarkNotificationAsRead)
+	notification.Post("/", auth.JWTMiddleware(cfg), handler.CreateNotification)
 }

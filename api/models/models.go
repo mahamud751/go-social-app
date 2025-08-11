@@ -13,7 +13,6 @@ import (
 // StringArray is a custom type to handle PostgreSQL text arrays
 type StringArray []string
 
-// Scan implements the sql.Scanner interface
 func (a *StringArray) Scan(value interface{}) error {
 	if value == nil {
 		*a = StringArray{}
@@ -36,7 +35,6 @@ func (a *StringArray) Scan(value interface{}) error {
 	return nil
 }
 
-// Value implements the driver.Valuer interface
 func (a StringArray) Value() (driver.Value, error) {
 	if len(a) == 0 {
 		return "{}", nil
@@ -47,7 +45,6 @@ func (a StringArray) Value() (driver.Value, error) {
 // UUIDArray is a custom type to handle PostgreSQL uuid arrays
 type UUIDArray []string
 
-// Scan implements the sql.Scanner interface
 func (a *UUIDArray) Scan(value interface{}) error {
 	if value == nil {
 		*a = UUIDArray{}
@@ -70,7 +67,6 @@ func (a *UUIDArray) Scan(value interface{}) error {
 	return nil
 }
 
-// Value implements the driver.Valuer interface
 func (a UUIDArray) Value() (driver.Value, error) {
 	if len(a) == 0 {
 		return "{}", nil
@@ -103,7 +99,7 @@ type User struct {
 	Country        string
 	Followers      StringArray `gorm:"type:text[]"`
 	Following      StringArray `gorm:"type:text[]"`
-	Friends        StringArray `gorm:"type:text[]"` // Added for confirmed friends
+	Friends        StringArray `gorm:"type:text[]"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	Posts          []Post      `gorm:"foreignKey:UserID"`
@@ -113,25 +109,26 @@ type User struct {
 }
 
 type Post struct {
-	ID        string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	UserID    string      `gorm:"type:uuid;not null"`
-	Desc      string
-	Likes     UUIDArray   `gorm:"type:uuid[]"`
-	Image     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Comments  []Comment   `gorm:"foreignKey:PostID"`
+	ID           string              `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	UserID       string              `gorm:"type:uuid;not null"`
+	Desc         string
+	Reactions    map[string][]string `gorm:"serializer:json"`
+	CommentCount int
+	Image        string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	Comments     []Comment           `gorm:"foreignKey:PostID"`
 }
 
 type Comment struct {
-	ID        string      `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	PostID    string      `gorm:"type:uuid;not null"`
-	UserID    string      `gorm:"type:uuid;not null"`
-	Text      string      `gorm:"not null"`
-	ParentID  *string     `gorm:"type:uuid"`
-	Likes     UUIDArray   `gorm:"type:uuid[]"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID         string              `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	PostID     string              `gorm:"type:uuid;not null"`
+	UserID     string              `gorm:"type:uuid;not null"`
+	Text       string              `gorm:"not null"`
+	ParentID   *string             `gorm:"type:uuid"`
+	Reactions  map[string][]string `gorm:"serializer:json"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type Chat struct {
@@ -155,19 +152,19 @@ type FriendRequest struct {
 	ID          string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
 	SenderID    string    `gorm:"type:uuid;not null"`
 	ReceiverID  string    `gorm:"type:uuid;not null"`
-	Status      string    `gorm:"not null;default:pending"` // pending, accepted, rejected
+	Status      string    `gorm:"not null;default:pending"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
 
 type Notification struct {
 	ID          string    `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
-	UserID      string    `gorm:"type:uuid;not null"` // Receiver of the notification
-	Type        string    `gorm:"not null"` // like, comment, friend_request, friend_accept
-	FromUserID  string    `gorm:"type:uuid;not null"` // Sender of the action
-	PostID      *string   `gorm:"type:uuid"` // Optional, for like/comment
-	CommentID   *string   `gorm:"type:uuid"` // Optional, for comment
-	Message     string    `gorm:"not null"` // e.g., "User X liked your post"
+	UserID      string    `gorm:"type:uuid;not null"`
+	Type        string    `gorm:"not null"`
+	FromUserID  string    `gorm:"type:uuid;not null"`
+	PostID      *string   `gorm:"type:uuid"`
+	CommentID   *string   `gorm:"type:uuid"`
+	Message     string    `gorm:"not null"`
 	Read        bool      `gorm:"default:false"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
