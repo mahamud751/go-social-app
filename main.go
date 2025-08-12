@@ -9,6 +9,7 @@ import (
 	"social-media-app/api/comment"
 	"social-media-app/api/friend"
 	"social-media-app/api/notification"
+	"social-media-app/api/story"
 
 	"social-media-app/api/upload"
 	"social-media-app/api/user"
@@ -60,6 +61,7 @@ func main() {
 	comment.Setup(api, db, redisClient)
 	friend.Setup(api, db, redisClient)
 	notification.Setup(api, db, redisClient)
+	story.Setup(api,db,redisClient)
 	upload.Setup(api)
 
 

@@ -103,6 +103,7 @@ type User struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	Posts          []Post      `gorm:"foreignKey:UserID"`
+	Stories        []Story     `gorm:"foreignKey:UserID"`
 	Chats          []Chat      `gorm:"many2many:user_chats"`
 	Messages       []Message   `gorm:"foreignKey:SenderID"`
 	Comments       []Comment   `gorm:"foreignKey:UserID"`
@@ -180,6 +181,16 @@ type Product struct {
 	UpdatedAt time.Time
 }
 
+type Story struct {
+	ID        string `gorm:"type:uuid;primaryKey;default:uuid_generate_v4()"`
+	UserID    string `gorm:"type:uuid;not null"`
+	Text      string
+	Image     string
+	Color     string `gorm:"not null"` // Background color for text
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 func (u *User) BeforeCreate(tx *gorm.DB) (err error) {
 	if u.ID == "" {
 		u.ID = uuid.New().String()
@@ -232,6 +243,13 @@ func (p *Product) BeforeCreate(tx *gorm.DB) (err error) {
 func (c *Comment) BeforeCreate(tx *gorm.DB) (err error) {
 	if c.ID == "" {
 		c.ID = uuid.New().String()
+	}
+	return
+}
+
+func (s *Story) BeforeCreate(tx *gorm.DB) (err error) {
+	if s.ID == "" {
+		s.ID = uuid.New().String()
 	}
 	return
 }

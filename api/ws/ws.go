@@ -21,40 +21,33 @@ var (
 
 func Setup(app fiber.Router) {
 	app.Get("/ws", websocket.New(handleWebSocket, websocket.Config{
-		// Enable compression for better performance
 		EnableCompression: true,
-		// Set read/write timeouts
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:    1024,
+		WriteBufferSize:   1024,
 	}))
 }
 
 func handleWebSocket(c *websocket.Conn) {
-	// Set up ping/pong mechanism
-	c.SetReadDeadline(time.Now().Add(60 * time.Second)) // Initial timeout
+	c.SetReadDeadline(time.Now().Add(60 * time.Second))
 	go func() {
-		ticker := time.NewTicker(30 * time.Second) // Send ping every 30 seconds
+		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			if err := c.WriteMessage(websocket.PingMessage, nil); err != nil {
 				log.Println("Ping error:", err)
 				return
 			}
-			// Update read deadline on each ping
 			c.SetReadDeadline(time.Now().Add(60 * time.Second))
 		}
 	}()
 
-	var userId string
-
-	// Handle pong messages
 	c.SetPongHandler(func(string) error {
-		// Reset read deadline on receiving pong
 		c.SetReadDeadline(time.Now().Add(60 * time.Second))
 		return nil
 	})
 
-	// Read messages
+	var userId string
+
 	for {
 		var msg struct {
 			Type   string                 `json:"type"`
@@ -109,22 +102,77 @@ func handleWebSocket(c *websocket.Conn) {
 			}
 			sendToUser(receiverId, map[string]interface{}{
 				"type": "notification",
-				"data": map[string]interface{}{
-					"id":           msg.Data["id"],
-					"type":         msg.Data["type"],
-					"fromUserId":   msg.Data["fromUserId"],
-					"fromUserName": msg.Data["fromUserName"],
-					"postId":       msg.Data["postId"],
-					"commentId":    msg.Data["commentId"],
-					"message":      msg.Data["message"],
-					"read":         msg.Data["read"],
-					"createdAt":    msg.Data["createdAt"],
-				},
+				"data": msg.Data,
 			})
+
+		case "post-created":
+			followers, ok := msg.Data["followers"].([]string)
+			if !ok {
+				log.Println("Invalid followers for post-created")
+				continue
+			}
+			for _, followerId := range followers {
+				sendToUser(followerId, map[string]interface{}{
+					"type": "new-post",
+					"data": msg.Data["post"],
+				})
+			}
+
+		case "post-reaction":
+			postOwner, ok := msg.Data["postOwner"].(string)
+			if !ok {
+				log.Println("Invalid postOwner for post-reaction")
+				continue
+			}
+			sendToUser(postOwner, map[string]interface{}{
+				"type": "post-reaction-update",
+				"data": msg.Data,
+			})
+
+		case "comment-added":
+			postOwner, ok := msg.Data["postOwner"].(string)
+			if !ok {
+				log.Println("Invalid postOwner for comment-added")
+				continue
+			}
+			sendToUser(postOwner, map[string]interface{}{
+				"type": "new-comment",
+				"data": msg.Data["comment"],
+			})
+			parentOwner, ok := msg.Data["parentOwner"].(string)
+			if ok && parentOwner != "" {
+				sendToUser(parentOwner, map[string]interface{}{
+					"type": "new-reply",
+					"data": msg.Data["comment"],
+				})
+			}
+
+		case "comment-reaction":
+			commentOwner, ok := msg.Data["commentOwner"].(string)
+			if !ok {
+				log.Println("Invalid commentOwner for comment-reaction")
+				continue
+			}
+			sendToUser(commentOwner, map[string]interface{}{
+				"type": "comment-reaction-update",
+				"data": msg.Data,
+			})
+
+		case "story-created":
+			followers, ok := msg.Data["followers"].([]string)
+			if !ok {
+				log.Println("Invalid followers for story-created")
+				continue
+			}
+			for _, followerId := range followers {
+				sendToUser(followerId, map[string]interface{}{
+					"type": "new-story",
+					"data": msg.Data["story"],
+				})
+			}
 		}
 	}
 
-	// Cleanup on disconnect
 	mutex.Lock()
 	delete(activeUsers, userId)
 	mutex.Unlock()
@@ -170,4 +218,49 @@ func SendNotification(userId string, notification map[string]interface{}) {
 		"type": "notification",
 		"data": notification,
 	})
+}
+
+func SendPostCreated(followers []string, post map[string]interface{}) {
+	for _, followerId := range followers {
+		sendToUser(followerId, map[string]interface{}{
+			"type": "new-post",
+			"data": post,
+		})
+	}
+}
+
+func SendPostReaction(postOwner string, reactionData map[string]interface{}) {
+	sendToUser(postOwner, map[string]interface{}{
+		"type": "post-reaction-update",
+		"data": reactionData,
+	})
+}
+
+func SendCommentAdded(postOwner string, parentOwner string, comment map[string]interface{}) {
+	sendToUser(postOwner, map[string]interface{}{
+		"type": "new-comment",
+		"data": comment,
+	})
+	if parentOwner != "" {
+		sendToUser(parentOwner, map[string]interface{}{
+			"type": "new-reply",
+			"data": comment,
+		})
+	}
+}
+
+func SendCommentReaction(commentOwner string, reactionData map[string]interface{}) {
+	sendToUser(commentOwner, map[string]interface{}{
+		"type": "comment-reaction-update",
+		"data": reactionData,
+	})
+}
+
+func SendStoryCreated(followers []string, story map[string]interface{}) {
+	for _, followerId := range followers {
+		sendToUser(followerId, map[string]interface{}{
+			"type": "new-story",
+			"data": story,
+		})
+	}
 }
