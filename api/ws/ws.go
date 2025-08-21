@@ -170,6 +170,94 @@ func handleWebSocket(c *websocket.Conn) {
 					"data": msg.Data["story"],
 				})
 			}
+		case "call-offer":
+			receiverId, ok := msg.Data["receiverId"].(string)
+			if !ok {
+				log.Println("Invalid receiverId for call-offer")
+				continue
+			}
+			offer, ok := msg.Data["offer"].(map[string]interface{})
+			if !ok {
+				log.Println("Invalid offer for call-offer")
+				continue
+			}
+			callType, ok := msg.Data["callType"].(string)
+			if !ok {
+				log.Println("Invalid callType for call-offer")
+				continue
+			}
+			senderId, ok := msg.Data["senderId"].(string)
+			if !ok {
+				log.Println("Invalid senderId for call-offer")
+				continue
+			}
+			sendToUser(receiverId, map[string]interface{}{
+				"type": "incoming-call-offer",
+				"data": map[string]interface{}{
+					"callerId": senderId,
+					"offer":    offer,
+					"callType": callType,
+				},
+			})
+
+		case "call-answer":
+			callerId, ok := msg.Data["callerId"].(string)
+			if !ok {
+				log.Println("Invalid callerId for call-answer")
+				continue
+			}
+			answer, ok := msg.Data["answer"].(map[string]interface{})
+			if !ok {
+				log.Println("Invalid answer for call-answer")
+				continue
+			}
+			sendToUser(callerId, map[string]interface{}{
+				"type": "call-answer",
+				"data": map[string]interface{}{
+					"answer": answer,
+				},
+			})
+
+		case "ice-candidate":
+			targetId, ok := msg.Data["targetId"].(string)
+			if !ok {
+				log.Println("Invalid targetId for ice-candidate")
+				continue
+			}
+			candidate, ok := msg.Data["candidate"].(map[string]interface{})
+			if !ok {
+				log.Println("Invalid candidate for ice-candidate")
+				continue
+			}
+			sendToUser(targetId, map[string]interface{}{
+				"type": "new-ice-candidate",
+				"data": map[string]interface{}{
+					"candidate": candidate,
+				},
+			})
+
+		case "decline-call":
+			callerId, ok := msg.Data["callerId"].(string)
+			if !ok {
+				log.Println("Invalid callerId for decline-call")
+				continue
+			}
+			sendToUser(callerId, map[string]interface{}{
+				"type": "call-declined",
+				"data": nil,
+			})
+
+		case "end-call":
+			peerId, ok := msg.Data["peerId"].(string)
+			if !ok {
+				log.Println("Invalid peerId for end-call")
+				continue
+			}
+			sendToUser(peerId, map[string]interface{}{
+				"type": "call-ended",
+				"data": nil,
+			})
+		
 		}
 	}
 
