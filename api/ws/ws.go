@@ -259,14 +259,27 @@ func handleWebSocket(c *websocket.Conn) {
 			}
 
 		case "agora-signal":
-			signalData := map[string]interface{}{
-				"action":   msg.Data["action"],
-				"targetId": msg.Data["targetId"],
-				"channel":  msg.Data["channel"],
-				"data":     msg.Data["data"],
+			action, ok := msg.Data["action"].(string)
+			if !ok {
+				log.Println("Invalid action in agora-signal")
+				continue
 			}
-			log.Printf("Handling agora-signal from %s: action=%v", msg.UserId, msg.Data["action"])
-			handleAgoraSignal(signalData, msg.UserId, c)
+		
+			targetId, ok := msg.Data["targetId"].(string)
+			if !ok || targetId == "" {
+				log.Println("No targetId provided in agora-signal")
+				continue
+			}
+		
+			log.Printf("Agora signal: action=%s from %s to %s", action, msg.UserId, targetId)
+		
+			// Forward the signal to the target user
+			sendToUser(targetId, map[string]interface{}{
+				"type": "agora-signal",
+				"userId": msg.UserId,
+				"data": msg.Data,
+			})
+		
 		}
 	}
 
