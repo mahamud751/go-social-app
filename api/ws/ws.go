@@ -38,21 +38,19 @@ var (
 )
 
 func Setup(app fiber.Router) {
-	ws := app.Group("/ws")
-
-	// WebSocket for signaling
-	ws.Get("/", websocket.New(handleWebSocket, websocket.Config{
+	// WebSocket endpoint
+	app.Get("/", websocket.New(handleWebSocket, websocket.Config{
 		EnableCompression: true,
 		ReadBufferSize:    1024,
 		WriteBufferSize:   1024,
 	}))
 
-	// Agora token route
-	ws.Get("/agora-token/:channel/:role/:uid", getAgoraToken)
+	// Agora token endpoint
+	app.Get("/agora-token/:channel/:role/:uid", GetAgoraToken)
 }
 
 
-func getAgoraToken(c *fiber.Ctx) error {
+func GetAgoraToken(c *fiber.Ctx) error {
 	channelName := c.Params("channel")
 	role := c.Params("role")
 	uid := c.Params("uid")
