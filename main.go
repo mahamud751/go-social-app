@@ -36,7 +36,7 @@ func main() {
 	}
 
 	app := fiber.New()
-
+	app.Get("/api/agora-token/:channel/:role/:uid", ws.GetAgoraToken)
 	// WS group
 	wsGroup := app.Group("/ws")
 	ws.Setup(wsGroup)
