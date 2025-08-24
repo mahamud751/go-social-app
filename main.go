@@ -10,15 +10,13 @@ import (
 	"social-media-app/api/friend"
 	"social-media-app/api/notification"
 	"social-media-app/api/story"
-
 	"social-media-app/api/upload"
 	"social-media-app/api/user"
 	"social-media-app/config"
+	"social-media-app/api/ws"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
-
-	"social-media-app/api/ws"
 )
 
 func main() {
@@ -26,7 +24,6 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to load config:", err)
 	}
-	
 
 	db, err := config.InitDB(cfg)
 	if err != nil {
@@ -39,7 +36,11 @@ func main() {
 	}
 
 	app := fiber.New()
-	ws.Setup(app.Group("/ws"))
+
+	// WS group
+	wsGroup := app.Group("/ws")
+	ws.Setup(wsGroup)
+
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
@@ -51,7 +52,6 @@ func main() {
 		return c.JSON(fiber.Map{"message": "hello users"})
 	})
 
-
 	api := app.Group("/api")
 	auth.Setup(api, db, redisClient, cfg)
 	user.Setup(api, db, redisClient)
@@ -61,9 +61,8 @@ func main() {
 	comment.Setup(api, db, redisClient)
 	friend.Setup(api, db, redisClient)
 	notification.Setup(api, db, redisClient)
-	story.Setup(api,db,redisClient)
+	story.Setup(api, db, redisClient)
 	upload.Setup(api)
-
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }

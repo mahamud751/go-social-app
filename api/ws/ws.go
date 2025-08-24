@@ -38,13 +38,14 @@ var (
 )
 
 func Setup(app fiber.Router) {
-	app.Get("/ws", websocket.New(handleWebSocket, websocket.Config{
+	// WebSocket endpoint
+	app.Get("/", websocket.New(handleWebSocket, websocket.Config{
 		EnableCompression: true,
 		ReadBufferSize:    1024,
 		WriteBufferSize:   1024,
 	}))
 
-	// Add route for generating Agora tokens
+	// Agora token endpoint
 	app.Get("/agora-token/:channel/:role/:uid", getAgoraToken)
 }
 
