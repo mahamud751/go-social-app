@@ -7,7 +7,23 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
+	rtctokenbuilder "github.com/AgoraIO-Community/go-tokenbuilder/rtctokenbuilder"
 )
+
+// Add these constants and variables
+const (
+	agoraAppID      = "0ad1df7f5f9241e7bdccc8324d516f27"
+	agoraAppCert    = "de7b71e27cbe4a1fad5783aa0a461576"
+	tokenExpiryTime = 3600 // Token expiry time in seconds
+)
+
+type CallSignal struct {
+	Type      string      `json:"type"`
+	Channel   string      `json:"channel"`
+	Data      interface{} `json:"data"`
+	UserId    string      `json:"userId"`
+	TargetId  string      `json:"targetId,omitempty"`
+}
 
 type User struct {
 	UserID string
@@ -17,6 +33,7 @@ type User struct {
 var (
 	activeUsers = make(map[string]*User)
 	mutex       sync.Mutex
+	activeCalls = make(map[string]string) // channel -> initiator user ID
 )
 
 func Setup(app fiber.Router) {
@@ -25,6 +42,41 @@ func Setup(app fiber.Router) {
 		ReadBufferSize:    1024,
 		WriteBufferSize:   1024,
 	}))
+	
+	// Add route for generating Agora tokens
+	app.Get("/agora-token/:channel/:role/:uid", getAgoraToken)
+}
+
+func getAgoraToken(c *fiber.Ctx) error {
+    channelName := c.Params("channel")
+    role := c.Params("role")
+    uid := c.Params("uid")
+
+    var roleValue rtctokenbuilder.Role
+    switch role {
+    case "publisher":
+        roleValue = rtctokenbuilder.RolePublisher
+    case "subscriber":
+        roleValue = rtctokenbuilder.RoleSubscriber
+    default:
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+            "error": "Invalid role. Use 'publisher' or 'subscriber'",
+        })
+    }
+
+    // Generate token with user account (string UID)
+    expireTime := uint32(time.Now().Unix()) + tokenExpiryTime
+    token, err := rtctokenbuilder.BuildTokenWithAccount(agoraAppID, agoraAppCert, channelName, uid, roleValue, expireTime)
+    if err != nil {
+        return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+            "error": "Failed to generate token: " + err.Error(),
+        })
+    }
+
+    return c.JSON(fiber.Map{
+        "token": token,
+        "appId": agoraAppID,
+    })
 }
 
 func handleWebSocket(c *websocket.Conn) {
@@ -170,105 +222,103 @@ func handleWebSocket(c *websocket.Conn) {
 					"data": msg.Data["story"],
 				})
 			}
-		case "call-offer":
-			receiverId, ok := msg.Data["receiverId"].(string)
-			if !ok {
-			  log.Println("Invalid receiverId for call-offer")
-			  continue
-			}
-			offer, ok := msg.Data["offer"].(map[string]interface{})
-			if !ok {
-			  log.Println("Invalid offer for call-offer")
-			  continue
-			}
-			callType, ok := msg.Data["callType"].(string)
-			if !ok {
-			  log.Println("Invalid callType for call-offer")
-			  continue
-			}
-			senderId, ok := msg.Data["senderId"].(string)
-			if !ok {
-			  log.Println("Invalid senderId for call-offer")
-			  continue
-			}
-			log.Printf("Forwarding call-offer: senderId=%s, receiverId=%s, callType=%s", senderId, receiverId, callType)
-			sendToUser(receiverId, map[string]interface{}{
-			  "type": "incoming-call-offer",
-			  "data": map[string]interface{}{
-				"callerId": senderId,
-				"offer":    offer,
-				"callType": callType,
-			  },
-			})
-		  
-		  case "call-answer":
-			callerId, ok := msg.Data["callerId"].(string)
-			if !ok {
-			  log.Println("Invalid callerId for call-answer")
-			  continue
-			}
-			answer, ok := msg.Data["answer"].(map[string]interface{})
-			if !ok {
-			  log.Println("Invalid answer for call-answer")
-			  continue
-			}
-			log.Printf("Forwarding call-answer: callerId=%s", callerId)
-			sendToUser(callerId, map[string]interface{}{
-			  "type": "call-answer",
-			  "data": map[string]interface{}{
-				"answer": answer,
-			  },
-			})
-		  
-		  case "ice-candidate":
-			targetId, ok := msg.Data["targetId"].(string)
-			if !ok {
-			  log.Println("Invalid targetId for ice-candidate")
-			  continue
-			}
-			candidate, ok := msg.Data["candidate"].(map[string]interface{})
-			if !ok {
-			  log.Println("Invalid candidate for ice-candidate")
-			  continue
-			}
-			log.Printf("Forwarding ice-candidate: targetId=%s", targetId)
-			sendToUser(targetId, map[string]interface{}{
-			  "type": "new-ice-candidate",
-			  "data": map[string]interface{}{
-				"candidate": candidate,
-			  },
-			})
-			case "decline-call":
-			callerId, ok := msg.Data["callerId"].(string)
-			if !ok {
-				log.Println("Invalid callerId for decline-call")
-				continue
-			}
-			sendToUser(callerId, map[string]interface{}{
-				"type": "call-declined",
-				"data": nil,
-			})
 
-		case "end-call":
-			peerId, ok := msg.Data["peerId"].(string)
-			if !ok {
-				log.Println("Invalid peerId for end-call")
-				continue
+		// Replace all call-related cases with Agora signaling
+		case "agora-signal":
+			// Convert the structured message to a map for the handler
+			signalData := map[string]interface{}{
+				"action":   msg.Data["action"],
+				"targetId": msg.Data["targetId"],
+				"channel":  msg.Data["channel"],
+				"data":     msg.Data["data"],
 			}
-			sendToUser(peerId, map[string]interface{}{
-				"type": "call-ended",
-				"data": nil,
-			})
-		
+			handleAgoraSignal(signalData, msg.UserId, c)
 		}
 	}
 
+	// Clean up user on disconnect
 	mutex.Lock()
 	delete(activeUsers, userId)
+	// Remove user from active calls if they were in one
+	for channel, initiator := range activeCalls {
+		if initiator == userId {
+			delete(activeCalls, channel)
+			// Notify other participants
+			broadcastToChannel(channel, CallSignal{
+				Type: "user-left",
+				Data: map[string]interface{}{
+					"userId": userId,
+				},
+			}, userId)
+		}
+	}
 	mutex.Unlock()
+	
 	log.Println("User disconnected:", userId)
 	broadcastActiveUsers()
 	c.Close()
+}
+
+func handleAgoraSignal(data map[string]interface{}, senderId string, conn *websocket.Conn) {
+	action, ok := data["action"].(string)
+	if !ok {
+		log.Println("Missing action in Agora signal")
+		return
+	}
+	
+	targetId, ok := data["targetId"].(string)
+	if !ok {
+		log.Println("Missing targetId in Agora signal")
+		return
+	}
+	
+	// Forward signaling messages to the target user
+	signal := map[string]interface{}{
+		"type": "agora-signal",
+		"data": data,
+	}
+	
+	sendToUser(targetId, signal)
+	
+	// Handle call initiation to track active calls
+	if action == "call-request" {
+		channel, ok := data["channel"].(string)
+		if ok {
+			mutex.Lock()
+			activeCalls[channel] = senderId
+			mutex.Unlock()
+		}
+	} else if action == "call-ended" || action == "call-rejected" {
+		channel, ok := data["channel"].(string)
+		if ok {
+			mutex.Lock()
+			delete(activeCalls, channel)
+			mutex.Unlock()
+		}
+	}
+}
+
+// Add the missing broadcastToChannel function
+func broadcastToChannel(channel string, signal CallSignal, excludeUserId string) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	for _, user := range activeUsers {
+		// Skip the excluded user
+		if user.UserID == excludeUserId {
+			continue
+		}
+		
+		// Send the signal to all users in the channel
+		if err := user.Conn.WriteJSON(map[string]interface{}{
+			"type":   "channel-signal",
+			"channel": channel,
+			"data":   signal.Data,
+			"userId": signal.UserId,
+		}); err != nil {
+			log.Println("Error broadcasting to channel:", channel, "user:", user.UserID, err)
+		}
+	}
 }
 
 func broadcastActiveUsers() {
@@ -303,6 +353,7 @@ func sendToUser(userId string, payload interface{}) {
 	}
 }
 
+// Keep all the existing Send functions (SendNotification, SendPostCreated, etc.)
 func SendNotification(userId string, notification map[string]interface{}) {
 	sendToUser(userId, map[string]interface{}{
 		"type": "notification",
