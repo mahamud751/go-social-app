@@ -36,7 +36,7 @@ func main() {
 	}
 
 	app := fiber.New()
-	app.Get("/api/agora-token/:channel/:role/:uid", ws.GetAgoraToken)
+
 	// WS group
 	wsGroup := app.Group("/ws")
 	ws.Setup(wsGroup)
@@ -53,6 +53,10 @@ func main() {
 	})
 
 	api := app.Group("/api")
+
+	// Move the Agora token route here (inside the /api group)
+	api.Get("/agora-token/:channel/:role/:uid", ws.GetAgoraToken)
+
 	auth.Setup(api, db, redisClient, cfg)
 	user.Setup(api, db, redisClient)
 	post.Setup(api, db, redisClient)
