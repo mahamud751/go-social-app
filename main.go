@@ -16,6 +16,7 @@ import (
 	"social-media-app/config"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
 func main() {
@@ -40,11 +41,11 @@ func main() {
 	wsGroup := app.Group("/ws")
 	ws.Setup(wsGroup)
 
-	// app.Use(cors.New(cors.Config{
-	// 	AllowOrigins: "*",
-	// 	AllowHeaders: "Origin, Content-Type, Accept, Authorization",
-	// 	AllowMethods: "GET, POST, PUT, DELETE, OPTIONS",
-	// }))
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
+		AllowMethods: "GET, POST, PUT, DELETE, OPTIONS",
+	}))
 
 	app.Static("/images", "./public/images")
 
