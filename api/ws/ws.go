@@ -47,12 +47,22 @@ func Setup(app fiber.Router) {
 }
 
 func GetAgoraToken(c *fiber.Ctx) error {
-	channelName := c.Params("channel")
-	role := c.Params("role")
-	uid := c.Params("uid")
+	channel := c.Query("channel")
+	role := c.Query("role")
+	uid := c.Query("uid")
 
-	log.Printf("Generating token for channel: %s, role: %s, uid: %s", channelName, role, uid)
+	if channel == "" || role == "" || uid == "" {
+		log.Printf("Missing parameters: channel=%s, role=%s, uid=%s", channel, role, uid)
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Missing required parameters: channel, role, uid",
+		})
+	}
 
+	log.Printf("Generating token for channel: %s, role: %s, uid: %s", channel, role, uid)
+
+	return GenerateAgoraToken(c, channel, role, uid)
+}
+func GenerateAgoraToken(c *fiber.Ctx, channel, role, uid string) error {
 	var roleValue rtctokenbuilder.Role
 	switch role {
 	case "publisher":
@@ -75,7 +85,7 @@ func GetAgoraToken(c *fiber.Ctx) error {
 	uidInt, err := strconv.ParseUint(uid, 10, 32)
 	if err == nil {
 		// Use BuildTokenWithUid if available
-		token, err = rtctokenbuilder.BuildTokenWithUid(agoraAppID, agoraAppCert, channelName, uint32(uidInt), roleValue, expireTime, expireTime)
+		token, err = rtctokenbuilder.BuildTokenWithUid(agoraAppID, agoraAppCert, channel, uint32(uidInt), roleValue, expireTime, expireTime)
 		if err != nil {
 			log.Printf("Failed to generate token with UID: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -85,7 +95,7 @@ func GetAgoraToken(c *fiber.Ctx) error {
 	} else {
 		// Fallback to BuildTokenWithUserAccount if UID is not numeric
 		log.Printf("Invalid UID for numeric conversion: %s, falling back to BuildTokenWithUserAccount", uid)
-		token, err = rtctokenbuilder.BuildTokenWithUserAccount(agoraAppID, agoraAppCert, channelName, uid, roleValue, expireTime, expireTime)
+		token, err = rtctokenbuilder.BuildTokenWithUserAccount(agoraAppID, agoraAppCert, channel, uid, roleValue, expireTime, expireTime)
 		if err != nil {
 			log.Printf("Failed to generate token with UserAccount: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -94,10 +104,12 @@ func GetAgoraToken(c *fiber.Ctx) error {
 		}
 	}
 
-	log.Printf("Generated token successfully for channel: %s, uid: %s", channelName, uid)
+	log.Printf("Generated token successfully for channel: %s, uid: %s", channel, uid)
 	return c.JSON(fiber.Map{
-		"token": token,
-		"appId": agoraAppID,
+		"token":   token,
+		"appId":   agoraAppID,
+		"channel": channel,
+		"uid":     uid,
 	})
 }
 
