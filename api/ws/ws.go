@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
+	rtctokenbuilder "github.com/AgoraIO/Tools/DynamicKey/AgoraDynamicKey/go/src/rtctokenbuilder2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
-	rtctokenbuilder "github.com/AgoraIO/Tools/DynamicKey/AgoraDynamicKey/go/src/rtctokenbuilder2"
 )
 
 // Constants and variables
@@ -258,27 +258,47 @@ func handleWebSocket(c *websocket.Conn) {
 				})
 			}
 
-		case "agora-signal":
-			action, ok := msg.Data["action"].(string)
-			if !ok {
-				log.Println("Invalid action in agora-signal")
-				continue
-			}
-		
-			targetId, ok := msg.Data["targetId"].(string)
-			if !ok || targetId == "" {
-				log.Println("No targetId provided in agora-signal")
-				continue
-			}
-		
-			log.Printf("Agora signal: action=%s from %s to %s", action, msg.UserId, targetId)
-		
-			// Forward the signal to the target user
-			sendToUser(targetId, map[string]interface{}{
-				"type": "agora-signal",
-				"userId": msg.UserId,
-				"data": msg.Data,
-			})
+	// Add this case to your existing switch statement in handleWebSocket
+case "agora-signal":
+    targetId, ok := msg.Data["targetId"].(string)
+    if !ok {
+        log.Println("Missing targetId in agora-signal")
+        continue
+    }
+    
+    action, ok := msg.Data["action"].(string)
+    if !ok {
+        log.Println("Missing action in agora-signal")
+        continue
+    }
+    
+    log.Printf("Forwarding agora-signal: action=%s, from=%s, to=%s", action, msg.UserId, targetId)
+    
+    // Forward the signaling message to the target user
+    sendToUser(targetId, map[string]interface{}{
+        "type": "agora-signal",
+        "userId": msg.UserId,
+        "data": msg.Data,
+    })
+    
+    // Handle call initiation to track active calls
+    if action == "call-request" {
+        channel, ok := msg.Data["channel"].(string)
+        if ok {
+            mutex.Lock()
+            activeCalls[channel] = msg.UserId
+            log.Printf("Registered call: channel=%s, initiator=%s", channel, msg.UserId)
+            mutex.Unlock()
+        }
+    } else if action == "call-ended" || action == "call-rejected" {
+        channel, ok := msg.Data["channel"].(string)
+        if ok {
+            mutex.Lock()
+            delete(activeCalls, channel)
+            log.Printf("Removed call: channel=%s", channel)
+            mutex.Unlock()
+        }
+    }
 		
 		}
 	}
