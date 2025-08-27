@@ -19,11 +19,11 @@ const (
 )
 
 type CallSignal struct {
-	Type      string      `json:"type"`
-	Channel   string      `json:"channel"`
-	Data      interface{} `json:"data"`
-	UserId    string      `json:"userId"`
-	TargetId  string      `json:"targetId,omitempty"`
+	Type     string      `json:"type"`
+	Channel  string      `json:"channel"`
+	Data     interface{} `json:"data"`
+	UserId   string      `json:"userId"`
+	TargetId string      `json:"targetId,omitempty"`
 }
 
 type User struct {
@@ -38,15 +38,13 @@ var (
 )
 
 func Setup(app fiber.Router) {
-    // WebSocket endpoint
-    app.Get("/", websocket.New(handleWebSocket, websocket.Config{
-        EnableCompression: true,
-        ReadBufferSize:    1024,
-        WriteBufferSize:   1024,
-    }))
+	// WebSocket endpoint
+	app.Get("/", websocket.New(handleWebSocket, websocket.Config{
+		EnableCompression: true,
+		ReadBufferSize:    1024,
+		WriteBufferSize:   1024,
+	}))
 }
-
-
 
 func GetAgoraToken(c *fiber.Ctx) error {
 	channelName := c.Params("channel")
@@ -259,27 +257,46 @@ func handleWebSocket(c *websocket.Conn) {
 			}
 
 		case "agora-signal":
+			targetId, ok := msg.Data["targetId"].(string)
+			if !ok {
+				log.Println("Missing targetId in agora-signal")
+				continue
+			}
+
 			action, ok := msg.Data["action"].(string)
 			if !ok {
-				log.Println("Invalid action in agora-signal")
+				log.Println("Missing action in agora-signal")
 				continue
 			}
-		
-			targetId, ok := msg.Data["targetId"].(string)
-			if !ok || targetId == "" {
-				log.Println("No targetId provided in agora-signal")
-				continue
-			}
-		
-			log.Printf("Agora signal: action=%s from %s to %s", action, msg.UserId, targetId)
-		
-			// Forward the signal to the target user
+
+			log.Printf("Forwarding agora-signal: action=%s, from=%s, to=%s", action, msg.UserId, targetId)
+
+			// Forward the signaling message to the target user
 			sendToUser(targetId, map[string]interface{}{
-				"type": "agora-signal",
+				"type":   "agora-signal",
 				"userId": msg.UserId,
-				"data": msg.Data,
+				"data":   msg.Data,
 			})
-		
+
+			// Handle call initiation to track active calls
+			if action == "call-request" {
+				channel, ok := msg.Data["channel"].(string)
+				if ok {
+					mutex.Lock()
+					activeCalls[channel] = msg.UserId
+					log.Printf("Registered call: channel=%s, initiator=%s", channel, msg.UserId)
+					mutex.Unlock()
+				}
+			} else if action == "call-ended" || action == "call-rejected" {
+				channel, ok := msg.Data["channel"].(string)
+				if ok {
+					mutex.Lock()
+					delete(activeCalls, channel)
+					log.Printf("Removed call: channel=%s", channel)
+					mutex.Unlock()
+				}
+			}
+
 		}
 	}
 
