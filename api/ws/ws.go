@@ -2,7 +2,6 @@ package ws
 
 import (
 	"log"
-	"strconv"
 	"sync"
 	"time"
 
@@ -62,6 +61,7 @@ func GetAgoraToken(c *fiber.Ctx) error {
 
 	return GenerateAgoraToken(c, channel, role, uid)
 }
+
 func GenerateAgoraToken(c *fiber.Ctx, channel, role, uid string) error {
 	var roleValue rtctokenbuilder.Role
 	switch role {
@@ -76,32 +76,21 @@ func GenerateAgoraToken(c *fiber.Ctx, channel, role, uid string) error {
 		})
 	}
 
-	// Try BuildTokenWithUid
-	expireTime := uint32(time.Now().Unix()) + tokenExpiryTime
-	var token string
-	var err error
-
-	// Convert string UID to uint32 for BuildTokenWithUid
-	uidInt, err := strconv.ParseUint(uid, 10, 32)
-	if err == nil {
-		// Use BuildTokenWithUid if available
-		token, err = rtctokenbuilder.BuildTokenWithUid(agoraAppID, agoraAppCert, channel, uint32(uidInt), roleValue, expireTime, expireTime)
-		if err != nil {
-			log.Printf("Failed to generate token with UID: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to generate token: " + err.Error(),
-			})
-		}
-	} else {
-		// Fallback to BuildTokenWithUserAccount if UID is not numeric
-		log.Printf("Invalid UID for numeric conversion: %s, falling back to BuildTokenWithUserAccount", uid)
-		token, err = rtctokenbuilder.BuildTokenWithUserAccount(agoraAppID, agoraAppCert, channel, uid, roleValue, expireTime, expireTime)
-		if err != nil {
-			log.Printf("Failed to generate token with UserAccount: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to generate token: " + err.Error(),
-			})
-		}
+	expireTime := uint32(time.Now().Unix() + tokenExpiryTime)
+	token, err := rtctokenbuilder.BuildTokenWithUserAccount(
+		agoraAppID,
+		agoraAppCert,
+		channel,
+		uid,
+		roleValue,
+		expireTime,
+		expireTime,
+	)
+	if err != nil {
+		log.Printf("Failed to generate token with UserAccount: %v", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to generate token: " + err.Error(),
+		})
 	}
 
 	log.Printf("Generated token successfully for channel: %s, uid: %s", channel, uid)
@@ -113,7 +102,6 @@ func GenerateAgoraToken(c *fiber.Ctx, channel, role, uid string) error {
 	})
 }
 
-// Rest of the code remains unchanged
 func handleWebSocket(c *websocket.Conn) {
 	c.SetReadDeadline(time.Now().Add(60 * time.Second))
 	go func() {
@@ -197,13 +185,17 @@ func handleWebSocket(c *websocket.Conn) {
 			})
 
 		case "post-created":
-			followers, ok := msg.Data["followers"].([]string)
+			followers, ok := msg.Data["followers"].([]interface{})
 			if !ok {
 				log.Println("Invalid followers for post-created")
 				continue
 			}
-			log.Printf("Broadcasting post-created to %d followers", len(followers))
-			for _, followerId := range followers {
+			followerIds := make([]string, len(followers))
+			for i, f := range followers {
+				followerIds[i], _ = f.(string)
+			}
+			log.Printf("Broadcasting post-created to %d followers", len(followerIds))
+			for _, followerId := range followerIds {
 				sendToUser(followerId, map[string]interface{}{
 					"type": "new-post",
 					"data": msg.Data["post"],
@@ -255,13 +247,17 @@ func handleWebSocket(c *websocket.Conn) {
 			})
 
 		case "story-created":
-			followers, ok := msg.Data["followers"].([]string)
+			followers, ok := msg.Data["followers"].([]interface{})
 			if !ok {
 				log.Println("Invalid followers for story-created")
 				continue
 			}
-			log.Printf("Broadcasting story-created to %d followers", len(followers))
-			for _, followerId := range followers {
+			followerIds := make([]string, len(followers))
+			for i, f := range followers {
+				followerIds[i], _ = f.(string)
+			}
+			log.Printf("Broadcasting story-created to %d followers", len(followerIds))
+			for _, followerId := range followerIds {
 				sendToUser(followerId, map[string]interface{}{
 					"type": "new-story",
 					"data": msg.Data["story"],
@@ -290,6 +286,28 @@ func handleWebSocket(c *websocket.Conn) {
 				"data":   msg.Data,
 			})
 
+			// Handle active calls
+			if action == "call-request" {
+				channel, ok := msg.Data["channel"].(string)
+				if ok {
+					mutex.Lock()
+					activeCalls[channel] = msg.UserId
+					log.Printf("Registered call: channel=%s, initiator=%s", channel, msg.UserId)
+					mutex.Unlock()
+				} else {
+					log.Println("Missing channel in call-request")
+				}
+			} else if action == "call-ended" || action == "call-rejected" {
+				channel, ok := msg.Data["channel"].(string)
+				if ok {
+					mutex.Lock()
+					delete(activeCalls, channel)
+					log.Printf("Removed call: channel=%s", channel)
+					mutex.Unlock()
+				} else {
+					log.Println("Missing channel in call-ended or call-rejected")
+				}
+			}
 		}
 	}
 
@@ -299,13 +317,21 @@ func handleWebSocket(c *websocket.Conn) {
 	for channel, initiator := range activeCalls {
 		if initiator == userId {
 			delete(activeCalls, channel)
-			log.Printf("Broadcasting user-left for channel %s", channel)
-			broadcastToChannel(channel, CallSignal{
-				Type: "user-left",
-				Data: map[string]interface{}{
-					"userId": userId,
-				},
-			}, userId)
+			log.Printf("Removed active call on disconnect: channel %s", channel)
+			// Notify other participant
+			for _, user := range activeUsers {
+				if user.UserID != userId {
+					sendToUser(user.UserID, map[string]interface{}{
+						"type":   "agora-signal",
+						"userId": userId,
+						"data": map[string]interface{}{
+							"action":   "call-ended",
+							"channel":  channel,
+							"targetId": user.UserID,
+						},
+					})
+				}
+			}
 		}
 	}
 	mutex.Unlock()
@@ -313,74 +339,6 @@ func handleWebSocket(c *websocket.Conn) {
 	log.Printf("User disconnected: %s", userId)
 	broadcastActiveUsers()
 	c.Close()
-}
-
-func handleAgoraSignal(data map[string]interface{}, senderId string, conn *websocket.Conn) {
-	action, ok := data["action"].(string)
-	if !ok {
-		log.Println("Missing action in Agora signal")
-		return
-	}
-
-	targetId, ok := data["targetId"].(string)
-	if !ok {
-		log.Println("Missing targetId in Agora signal")
-		return
-	}
-
-	log.Printf("Forwarding agora-signal: action=%s, from=%s, to=%s", action, senderId, targetId)
-
-	// Forward signaling messages to the target user
-	signal := map[string]interface{}{
-		"type": "agora-signal",
-		"data": data,
-	}
-
-	sendToUser(targetId, signal)
-
-	// Handle call initiation to track active calls
-	if action == "call-request" {
-		channel, ok := data["channel"].(string)
-		if ok {
-			mutex.Lock()
-			activeCalls[channel] = senderId
-			log.Printf("Registered call: channel=%s, initiator=%s", channel, senderId)
-			mutex.Unlock()
-		} else {
-			log.Println("Missing channel in call-request")
-		}
-	} else if action == "call-ended" || action == "call-rejected" {
-		channel, ok := data["channel"].(string)
-		if ok {
-			mutex.Lock()
-			delete(activeCalls, channel)
-			log.Printf("Removed call: channel=%s", channel)
-			mutex.Unlock()
-		} else {
-			log.Println("Missing channel in call-ended or call-rejected")
-		}
-	}
-}
-
-func broadcastToChannel(channel string, signal CallSignal, excludeUserId string) {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	log.Printf("Broadcasting to channel %s, excluding user %s", channel, excludeUserId)
-	for _, user := range activeUsers {
-		if user.UserID == excludeUserId {
-			continue
-		}
-
-		if err := user.Conn.WriteJSON(map[string]interface{}{
-			"type":    "channel-signal",
-			"channel": channel,
-			"data":    signal.Data,
-			"userId":  signal.UserId,
-		}); err != nil {
-			log.Printf("Error broadcasting to channel %s, user %s: %v", channel, user.UserID, err)
-		}
-	}
 }
 
 func broadcastActiveUsers() {
