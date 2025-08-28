@@ -56,7 +56,7 @@ func main() {
 	api := app.Group("/api")
 
 	// Updated Agora token route using query parameters
-	api.Get("/agora-token", ws.GetAgoraToken)
+api.Get("/agora-token/", ws.GetAgoraToken) 
 
 	auth.Setup(api, db, redisClient, cfg)
 	user.Setup(api, db, redisClient)
