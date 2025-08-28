@@ -58,9 +58,6 @@ func main() {
 	// Updated Agora token route using query parameters
 	api.Get("/agora-token/", ws.GetAgoraToken)
 
-	// New endpoint for setting up bidirectional calls
-	api.Post("/setup-call/", ws.SetupCall)
-
 	auth.Setup(api, db, redisClient, cfg)
 	user.Setup(api, db, redisClient)
 	post.Setup(api, db, redisClient)
