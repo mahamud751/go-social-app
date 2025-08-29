@@ -263,7 +263,6 @@ func handleWebSocket(c *websocket.Conn) {
 					"data": msg.Data["story"],
 				})
 			}
-
 		case "agora-signal":
 			action, ok := msg.Data["action"].(string)
 			if !ok {
@@ -277,7 +276,18 @@ func handleWebSocket(c *websocket.Conn) {
 				continue
 			}
 
-			log.Printf("Agora signal: action=%s from %s to %s", action, msg.UserId, targetId)
+			// For call requests, generate a token for the receiver too
+			if action == "call-request" {
+				channel, ok := msg.Data["channel"].(string)
+				if ok {
+					// Generate token for receiver
+					token, err := generateTokenForUser(channel, "publisher", targetId)
+					if err == nil {
+						msg.Data["receiverToken"] = token
+						msg.Data["appId"] = agoraAppID
+					}
+				}
+			}
 
 			// Forward the signal to the target user
 			sendToUser(targetId, map[string]interface{}{
@@ -285,29 +295,6 @@ func handleWebSocket(c *websocket.Conn) {
 				"userId": msg.UserId,
 				"data":   msg.Data,
 			})
-
-			// Handle active calls
-			if action == "call-request" {
-				channel, ok := msg.Data["channel"].(string)
-				if ok {
-					mutex.Lock()
-					activeCalls[channel] = msg.UserId
-					log.Printf("Registered call: channel=%s, initiator=%s", channel, msg.UserId)
-					mutex.Unlock()
-				} else {
-					log.Println("Missing channel in call-request")
-				}
-			} else if action == "call-ended" || action == "call-rejected" {
-				channel, ok := msg.Data["channel"].(string)
-				if ok {
-					mutex.Lock()
-					delete(activeCalls, channel)
-					log.Printf("Removed call: channel=%s", channel)
-					mutex.Unlock()
-				} else {
-					log.Println("Missing channel in call-ended or call-rejected")
-				}
-			}
 		}
 	}
 
@@ -339,6 +326,25 @@ func handleWebSocket(c *websocket.Conn) {
 	log.Printf("User disconnected: %s", userId)
 	broadcastActiveUsers()
 	c.Close()
+}
+func generateTokenForUser(channel, role, uid string) (string, error) {
+	var roleValue rtctokenbuilder.Role
+	if role == "publisher" {
+		roleValue = rtctokenbuilder.RolePublisher
+	} else {
+		roleValue = rtctokenbuilder.RoleSubscriber
+	}
+
+	expireTime := uint32(time.Now().Unix() + tokenExpiryTime)
+	return rtctokenbuilder.BuildTokenWithUserAccount(
+		agoraAppID,
+		agoraAppCert,
+		channel,
+		uid,
+		roleValue,
+		expireTime,
+		expireTime,
+	)
 }
 
 func broadcastActiveUsers() {
