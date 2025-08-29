@@ -276,15 +276,31 @@ func handleWebSocket(c *websocket.Conn) {
 				continue
 			}
 
-			// For call requests, generate a token for the receiver too
+			// For call requests, generate tokens for both users
 			if action == "call-request" {
 				channel, ok := msg.Data["channel"].(string)
 				if ok {
 					// Generate token for receiver
-					token, err := generateTokenForUser(channel, "publisher", targetId)
+					receiverToken, err := generateTokenForUser(channel, "publisher", targetId)
 					if err == nil {
-						msg.Data["receiverToken"] = token
+						msg.Data["receiverToken"] = receiverToken
 						msg.Data["appId"] = agoraAppID
+
+						// Also generate token for caller and send it back
+						callerToken, err := generateTokenForUser(channel, "publisher", msg.UserId)
+						if err == nil {
+							// Send token back to caller
+							sendToUser(msg.UserId, map[string]interface{}{
+								"type":   "agora-signal",
+								"userId": "system",
+								"data": map[string]interface{}{
+									"action":  "token-generated",
+									"channel": channel,
+									"token":   callerToken,
+									"appId":   agoraAppID,
+								},
+							})
+						}
 					}
 				}
 			}
